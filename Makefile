@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Make sure we're using bash as the shell
+SHELL := /bin/bash
 # output dir
 OUT_DIR := ./_out
 # dir for tools: e.g., golangci-lint
@@ -38,9 +40,24 @@ CSI_IMAGE := $(CSI_IMAGE_REGISTRY)/spdkcsi:$(CSI_IMAGE_TAG)
 # default target
 all: spdkcsi lint test
 
+.PHONY: sma
+sma:
+	@echo === generating SMA protobuf definitions
+	@version=($$(go version | cut -f3 -d ' ' | sed 's/^go//g' | tr . ' ')); \
+	if [ $${version[0]} -ge 1 ] && [ $${version[1]} -ge 16 ]; then \
+		go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.26; \
+		go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.1; \
+	else \
+		go get google.golang.org/protobuf/cmd/protoc-gen-go@v1.26; \
+		go get google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.1; \
+	fi
+	@mkdir -p $(OUT_DIR)
+	@PATH=$$PATH:$$(go env GOPATH)/bin protoc --go_out=$(OUT_DIR) --go-grpc_out=$(OUT_DIR) \
+		spdk/lib/python/spdk/sma/proto/*.proto
+
 # build binary
 .PHONY: spdkcsi
-spdkcsi:
+spdkcsi: sma
 	@echo === building spdkcsi binary
 	@CGO_ENABLED=0 GOARCH=$(GOARCH) GOOS=linux go build -o $(OUT_DIR)/spdkcsi ./cmd/
 

@@ -25,19 +25,22 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/grpc"
 	"k8s.io/klog"
 	"k8s.io/utils/exec"
 	"k8s.io/utils/mount"
 
 	csicommon "github.com/spdk/spdk-csi/pkg/csi-common"
 	"github.com/spdk/spdk-csi/pkg/util"
+	"github.com/spdk/spdk-csi/_out/spdk.io/sma"
 )
 
 type nodeServer struct {
 	*csicommon.DefaultNodeServer
-	mounter mount.Interface
-	volumes map[string]*nodeVolume
-	mtx     sync.Mutex // protect volumes map
+	mounter   mount.Interface
+	volumes   map[string]*nodeVolume
+	mtx       sync.Mutex // protect volumes map
+	smaClient sma.StorageManagementAgentClient
 }
 
 type nodeVolume struct {
@@ -47,10 +50,15 @@ type nodeVolume struct {
 }
 
 func newNodeServer(d *csicommon.CSIDriver) *nodeServer {
+	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
+	if err != nil {
+		klog.Fatalln("failed to connect to SMA gRPC server")
+	}
 	return &nodeServer{
 		DefaultNodeServer: csicommon.NewDefaultNodeServer(d),
 		mounter:           mount.New(""),
 		volumes:           make(map[string]*nodeVolume),
+		smaClient:         sma.NewStorageManagementAgentClient(conn),
 	}
 }
 

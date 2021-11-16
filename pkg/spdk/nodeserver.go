@@ -33,6 +33,9 @@ import (
 	csicommon "github.com/spdk/spdk-csi/pkg/csi-common"
 	"github.com/spdk/spdk-csi/pkg/util"
 	"github.com/spdk/spdk-csi/_out/spdk.io/sma"
+	"github.com/spdk/spdk-csi/_out/spdk.io/sma/nvmf_tcp"
+	"google.golang.org/protobuf/types/known/wrapperspb"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 type nodeServer struct {
@@ -41,6 +44,7 @@ type nodeServer struct {
 	volumes   map[string]*nodeVolume
 	mtx       sync.Mutex // protect volumes map
 	smaClient sma.StorageManagementAgentClient
+	deviceId  string
 }
 
 type nodeVolume struct {
@@ -54,12 +58,22 @@ func newNodeServer(d *csicommon.CSIDriver) *nodeServer {
 	if err != nil {
 		klog.Fatalln("failed to connect to SMA gRPC server")
 	}
-	return &nodeServer{
+	ns := &nodeServer{
 		DefaultNodeServer: csicommon.NewDefaultNodeServer(d),
 		mounter:           mount.New(""),
 		volumes:           make(map[string]*nodeVolume),
 		smaClient:         sma.NewStorageManagementAgentClient(conn),
+		deviceId:          "",
 	}
+	err = ns.createDevice()
+	if err != nil {
+		klog.Fatalln("failed to create a device")
+	}
+	return ns
+}
+
+func (ns *nodeServer) cleanup() {
+	ns.removeDevice()
 }
 
 func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
@@ -285,4 +299,44 @@ func (ns *nodeServer) deleteMountPoint(path string) error {
 		}
 	}
 	return os.RemoveAll(path)
+}
+
+func (ns *nodeServer) createDevice() error {
+	params, err := anypb.New(&nvmf_tcp.CreateDeviceParameters{
+		Subnqn: &wrapperspb.StringValue{ Value: "nqn.2020-04.io.spdk.csi:cnode0" },
+		Adrfam: &wrapperspb.StringValue{ Value: "ipv4" },
+		Traddr: &wrapperspb.StringValue{ Value: "127.0.0.1" },
+		Trsvcid: &wrapperspb.StringValue{ Value: "4421" },
+	})
+	if err != nil {
+		return err
+	}
+	response, err := ns.smaClient.CreateDevice(context.Background(),
+		&sma.CreateDeviceRequest{
+			Type: &wrapperspb.StringValue{ Value: "nvmf_tcp" },
+			Params: params,
+		})
+	if err != nil {
+		klog.Error("failed to create a device")
+		return err
+	}
+	klog.Infof("created device: %s", response.Id.Value)
+	ns.deviceId = response.Id.Value
+	return nil
+}
+
+func (ns *nodeServer) removeDevice() error {
+	if ns.deviceId == "" {
+		return nil
+	}
+
+	klog.Infof("removing device: %s", ns.deviceId)
+	_, err := ns.smaClient.RemoveDevice(context.Background(),
+		&sma.RemoveDeviceRequest{
+			Id: &wrapperspb.StringValue{ Value: ns.deviceId },
+		})
+	if err != nil {
+		klog.Errorf("failed to remove device: %s", ns.deviceId)
+	}
+	return err
 }

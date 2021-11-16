@@ -51,6 +51,13 @@ func Run(conf *util.Config) {
 
 	ids = newIdentityServer(cd)
 
+	cleanup := func() {
+		if ns != nil {
+			ns.cleanup()
+		}
+	}
+	defer cleanup()
+
 	if conf.IsNodeServer {
 		ns = newNodeServer(cd)
 	}

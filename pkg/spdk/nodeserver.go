@@ -19,7 +19,9 @@ package spdk
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -40,17 +42,18 @@ import (
 
 type nodeServer struct {
 	*csicommon.DefaultNodeServer
-	mounter   mount.Interface
-	volumes   map[string]*nodeVolume
-	mtx       sync.Mutex // protect volumes map
-	smaClient sma.StorageManagementAgentClient
-	deviceId  string
+	mounter     mount.Interface
+	volumes     map[string]*nodeVolume
+	mtx         sync.Mutex // protect volume map
+	smaClient   sma.StorageManagementAgentClient
+	deviceId    string
 }
 
 type nodeVolume struct {
-	initiator   util.SpdkCsiInitiator
-	stagingPath string
-	tryLock     util.TryLock
+	initiator    util.SpdkCsiInitiator
+	stagingPath  string
+	sma          bool
+	tryLock      util.TryLock
 }
 
 func newNodeServer(d *csicommon.CSIDriver) *nodeServer {
@@ -81,9 +84,11 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 		volumeID := req.GetVolumeId()
 		ns.mtx.Lock()
 		defer ns.mtx.Unlock()
+		var sma = false
 
 		volume, exists := ns.volumes[volumeID]
 		if !exists {
+			sma = strings.EqualFold(req.GetVolumeContext()["targetType"], "tcp")
 			initiator, err := util.NewSpdkCsiInitiator(req.GetVolumeContext())
 			if err != nil {
 				return nil, err
@@ -91,6 +96,7 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 			volume = &nodeVolume{
 				initiator:   initiator,
 				stagingPath: "",
+				sma:         sma,
 			}
 			ns.volumes[volumeID] = volume
 		}
@@ -102,10 +108,21 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 
 	if volume.tryLock.Lock() {
 		defer volume.tryLock.Unlock()
+		defer func() {
+			if err != nil {
+				ns.disconnectVolume(ctx, req.GetVolumeId()) // nolint:errcheck // ignore error
+			}
+		}()
 
 		if volume.stagingPath != "" {
 			klog.Warning("volume already staged")
 			return &csi.NodeStageVolumeResponse{}, nil
+		}
+		if volume.sma {
+			err = ns.connectVolume(ctx, req.GetVolumeId(), req.GetVolumeContext())
+			if err != nil {
+				return nil, err
+			}
 		}
 		devicePath, err := volume.initiator.Connect() // idempotent
 		if err != nil {
@@ -146,6 +163,12 @@ func (ns *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstag
 			err = volume.initiator.Disconnect() // idempotent
 			if err != nil {
 				return status.Error(codes.Internal, err.Error())
+			}
+			if volume.sma {
+				err = ns.disconnectVolume(ctx, volumeID)
+				if err != nil {
+					return status.Error(codes.Internal, err.Error())
+				}
 			}
 			volume.stagingPath = ""
 			return nil
@@ -337,6 +360,49 @@ func (ns *nodeServer) removeDevice() error {
 		})
 	if err != nil {
 		klog.Errorf("failed to remove device: %s", ns.deviceId)
+	}
+	return err
+}
+
+func (ns *nodeServer) connectVolume(ctx context.Context, volumeID string, volume map[string]string) error {
+	var volumeType string
+	var params *anypb.Any
+	var err error
+
+	targetType := strings.ToLower(volume["targetType"])
+	switch targetType {
+	case "tcp":
+		volumeType = "nvmf_tcp"
+		params, err = anypb.New(&nvmf_tcp.ConnectVolumeParameters{
+			Subnqn: &wrapperspb.StringValue { Value: volume["nqn"] },
+			Traddr: &wrapperspb.StringValue { Value: volume["targetAddr"] },
+			Trsvcid: &wrapperspb.StringValue { Value: volume["targetPort"] },
+			Adrfam: &wrapperspb.StringValue { Value: "ipv4" },
+		})
+	default:
+		return fmt.Errorf("unsupported type: %s", targetType)
+	}
+	if err != nil {
+		return err
+	}
+	_, err = ns.smaClient.ConnectVolume(ctx,
+		&sma.ConnectVolumeRequest{
+			Type: &wrapperspb.StringValue { Value: volumeType },
+			Guid: &wrapperspb.StringValue { Value: volumeID },
+			Params: params,
+		})
+	return err
+}
+
+func (ns *nodeServer) disconnectVolume(ctx context.Context, volumeID string) error {
+	klog.Infof("disconnecting volume: %s", volumeID)
+
+	_, err := ns.smaClient.DisconnectVolume(ctx,
+		&sma.DisconnectVolumeRequest{
+			Guid: &wrapperspb.StringValue { Value: volumeID },
+		})
+	if err != nil {
+		klog.Errorf("failed to disconnect controller: %s", volumeID)
 	}
 	return err
 }

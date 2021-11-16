@@ -147,6 +147,14 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 			klog.Warning("volume already staged")
 			return &csi.NodeStageVolumeResponse{}, nil
 		}
+
+		if volume.controllerId != "" {
+			err = ns.attachVolume(ctx, req.GetVolumeId())
+			if err != nil {
+				return nil, err
+			}
+		}
+
 		devicePath, err := volume.initiator.Connect() // idempotent
 		if err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
@@ -178,6 +186,12 @@ func (ns *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstag
 			if volume.stagingPath == "" {
 				klog.Warning("volume already unstaged")
 				return nil
+			}
+			if volume.controllerId != "" {
+				err := ns.detachVolume(ctx, volumeID)
+				if err != nil {
+					return err
+				}
 			}
 			err := ns.deleteMountPoint(volume.stagingPath) // idempotent
 			if err != nil {
@@ -433,6 +447,34 @@ func (ns *nodeServer) disconnectController(ctx context.Context, controllerId str
 		})
 	if err != nil {
 		klog.Errorf("failed to disconnect controller: %s", controllerId)
+	}
+	return err
+}
+
+func (ns *nodeServer) attachVolume(ctx context.Context, volumeGuid string) error {
+	klog.Infof("attaching volume: %s to device: %s", volumeGuid, ns.deviceId)
+
+	_, err := ns.smaClient.AttachVolume(ctx,
+		&sma.AttachVolumeRequest{
+			VolumeGuid: &wrapperspb.StringValue { Value: volumeGuid },
+			DeviceId: &wrapperspb.StringValue { Value: ns.deviceId },
+		})
+	if err != nil {
+		klog.Errorf("failed to attach volume: %s to device: %s", volumeGuid, ns.deviceId)
+	}
+	return err
+}
+
+func (ns *nodeServer) detachVolume(ctx context.Context, volumeGuid string) error {
+	klog.Infof("detaching volume: %s", volumeGuid)
+
+	_, err := ns.smaClient.DetachVolume(ctx,
+		&sma.DetachVolumeRequest{
+			VolumeGuid: &wrapperspb.StringValue { Value: volumeGuid },
+			DeviceId: &wrapperspb.StringValue { Value: ns.deviceId },
+		})
+	if err != nil {
+		klog.Errorf("failed to detach volume: %s", volumeGuid)
 	}
 	return err
 }

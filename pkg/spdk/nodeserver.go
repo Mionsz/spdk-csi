@@ -19,7 +19,9 @@ package spdk
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -40,17 +42,19 @@ import (
 
 type nodeServer struct {
 	*csicommon.DefaultNodeServer
-	mounter   mount.Interface
-	volumes   map[string]*nodeVolume
-	mtx       sync.Mutex // protect volumes map
-	smaClient sma.StorageManagementAgentClient
-	deviceId  string
+	mounter     mount.Interface
+	volumes     map[string]*nodeVolume
+	controllers map[string]int
+	mtx         sync.Mutex // protect volumes/controllers maps
+	smaClient   sma.StorageManagementAgentClient
+	deviceId    string
 }
 
 type nodeVolume struct {
-	initiator   util.SpdkCsiInitiator
-	stagingPath string
-	tryLock     util.TryLock
+	initiator    util.SpdkCsiInitiator
+	stagingPath  string
+	controllerId string
+	tryLock      util.TryLock
 }
 
 func newNodeServer(d *csicommon.CSIDriver) *nodeServer {
@@ -62,6 +66,7 @@ func newNodeServer(d *csicommon.CSIDriver) *nodeServer {
 		DefaultNodeServer: csicommon.NewDefaultNodeServer(d),
 		mounter:           mount.New(""),
 		volumes:           make(map[string]*nodeVolume),
+		controllers:       make(map[string]int),
 		smaClient:         sma.NewStorageManagementAgentClient(conn),
 		deviceId:          "",
 	}
@@ -84,6 +89,40 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 
 		volume, exists := ns.volumes[volumeID]
 		if !exists {
+			controllerId := ""
+			if strings.EqualFold(req.GetVolumeContext()["targetType"], "tcp") {
+				// TODO: this could probably be done under a more fine-grained mutex
+				id, volumes, err := ns.connectController(ctx, req.GetVolumeContext())
+				if err != nil {
+					return nil, err
+				}
+				controllerId = *id
+				ns.controllers[controllerId] += 1
+
+				ctrlrCleanup := func() {
+					if volume == nil {
+						if ns.controllers[controllerId] > 0 {
+							ns.controllers[controllerId] -= 1
+							if ns.controllers[controllerId] == 0 {
+								ns.disconnectController(ctx, controllerId)
+							}
+						}
+					}
+				}
+				defer ctrlrCleanup()
+
+				// make sure the volume exists under this controller
+				for _, volume := range volumes {
+					if volume == volumeID {
+						exists = true
+						break
+					}
+				}
+				if !exists {
+					klog.Errorf("volume %s not found at context %v", volumeID, req.GetVolumeContext())
+					return nil, fmt.Errorf("volume not found: %s", volumeID)
+				}
+			}
 			initiator, err := util.NewSpdkCsiInitiator(req.GetVolumeContext())
 			if err != nil {
 				return nil, err
@@ -91,6 +130,7 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 			volume = &nodeVolume{
 				initiator:   initiator,
 				stagingPath: "",
+				controllerId: controllerId,
 			}
 			ns.volumes[volumeID] = volume
 		}
@@ -157,6 +197,12 @@ func (ns *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstag
 	}
 
 	ns.mtx.Lock()
+	if ns.controllers[volume.controllerId] > 0 {
+		ns.controllers[volume.controllerId] -= 1
+		if ns.controllers[volume.controllerId] == 0 {
+			ns.disconnectController(ctx, volume.controllerId)
+		}
+	}
 	delete(ns.volumes, volumeID)
 	ns.mtx.Unlock()
 	return &csi.NodeUnstageVolumeResponse{}, nil
@@ -337,6 +383,56 @@ func (ns *nodeServer) removeDevice() error {
 		})
 	if err != nil {
 		klog.Errorf("failed to remove device: %s", ns.deviceId)
+	}
+	return err
+}
+
+func (ns *nodeServer) connectController(ctx context.Context, ctrlrCtx map[string]string) (*string, []string, error) {
+	var controllerType string
+	var params *anypb.Any
+	var err error
+
+	targetType := strings.ToLower(ctrlrCtx["targetType"])
+	switch targetType {
+	case "tcp":
+		controllerType = "nvmf_tcp"
+		params, err = anypb.New(&nvmf_tcp.ConnectControllerParameters{
+			Subnqn: &wrapperspb.StringValue { Value: ctrlrCtx["nqn"] },
+			Traddr: &wrapperspb.StringValue { Value: ctrlrCtx["targetAddr"] },
+			Trsvcid: &wrapperspb.StringValue { Value: ctrlrCtx["targetPort"] },
+			Adrfam: &wrapperspb.StringValue { Value: "ipv4" },
+		})
+	default:
+		return nil, nil, fmt.Errorf("unsupported type: %s", targetType)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	response, err := ns.smaClient.ConnectController(ctx,
+		&sma.ConnectControllerRequest{
+			Type: &wrapperspb.StringValue { Value: controllerType },
+			Params: params,
+		})
+	if err != nil {
+		return nil, nil, err
+	}
+	var volumes []string
+	for _, volume := range response.Volumes {
+		volumes = append(volumes, volume.Value)
+	}
+	klog.Infof("connected controller: %s, volumes: %v", response.Controller.Value, volumes)
+	return &response.Controller.Value, volumes, nil
+}
+
+func (ns *nodeServer) disconnectController(ctx context.Context, controllerId string) error {
+	klog.Infof("disconnecting controller: %s", controllerId)
+
+	_, err := ns.smaClient.DisconnectController(ctx,
+		&sma.DisconnectControllerRequest{
+			Id: &wrapperspb.StringValue { Value: controllerId },
+		})
+	if err != nil {
+		klog.Errorf("failed to disconnect controller: %s", controllerId)
 	}
 	return err
 }

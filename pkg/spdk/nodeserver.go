@@ -90,6 +90,7 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 		volume, exists := ns.volumes[volumeID]
 		if !exists {
 			controllerId := ""
+			var initiatorParams map[string]string
 			if strings.EqualFold(req.GetVolumeContext()["targetType"], "tcp") {
 				// TODO: this could probably be done under a more fine-grained mutex
 				id, volumes, err := ns.connectController(ctx, req.GetVolumeContext())
@@ -122,8 +123,18 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 					klog.Errorf("volume %s not found at context %v", volumeID, req.GetVolumeContext())
 					return nil, fmt.Errorf("volume not found: %s", volumeID)
 				}
+				initiatorParams = map[string]string {
+					"targetType": "tcp",
+					"targetAddr": "127.0.0.1",
+					"targetPort": "4421",
+					"nqn": "nqn.2020-04.io.spdk.csi:cnode0",
+					"targetPath": req.GetVolumeContext()["targetPath"],
+					"model": req.GetVolumeContext()["model"],
+				}
+			} else {
+				initiatorParams = req.GetVolumeContext()
 			}
-			initiator, err := util.NewSpdkCsiInitiator(req.GetVolumeContext())
+			initiator, err := util.NewSpdkCsiInitiator(initiatorParams)
 			if err != nil {
 				return nil, err
 			}

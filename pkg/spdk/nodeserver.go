@@ -110,6 +110,7 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 		defer volume.tryLock.Unlock()
 		defer func() {
 			if err != nil {
+				ns.detachVolume(ctx, req.GetVolumeId()) // nolint:errcheck // ignore error
 				ns.disconnectVolume(ctx, req.GetVolumeId()) // nolint:errcheck // ignore error
 			}
 		}()
@@ -120,6 +121,10 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 		}
 		if volume.sma {
 			err = ns.connectVolume(ctx, req.GetVolumeId(), req.GetVolumeContext())
+			if err != nil {
+				return nil, err
+			}
+			err = ns.attachVolume(ctx, req.GetVolumeId())
 			if err != nil {
 				return nil, err
 			}
@@ -165,6 +170,10 @@ func (ns *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstag
 				return status.Error(codes.Internal, err.Error())
 			}
 			if volume.sma {
+				err = ns.detachVolume(ctx, volumeID)
+				if err != nil {
+					return err
+				}
 				err = ns.disconnectVolume(ctx, volumeID)
 				if err != nil {
 					return status.Error(codes.Internal, err.Error())
@@ -403,6 +412,34 @@ func (ns *nodeServer) disconnectVolume(ctx context.Context, volumeID string) err
 		})
 	if err != nil {
 		klog.Errorf("failed to disconnect controller: %s", volumeID)
+	}
+	return err
+}
+
+func (ns *nodeServer) attachVolume(ctx context.Context, volumeGuid string) error {
+	klog.Infof("attaching volume: %s to device: %s", volumeGuid, ns.deviceId)
+
+	_, err := ns.smaClient.AttachVolume(ctx,
+		&sma.AttachVolumeRequest{
+			VolumeGuid: &wrapperspb.StringValue { Value: volumeGuid },
+			DeviceId: &wrapperspb.StringValue { Value: ns.deviceId },
+		})
+	if err != nil {
+		klog.Errorf("failed to attach volume: %s to device: %s", volumeGuid, ns.deviceId)
+	}
+	return err
+}
+
+func (ns *nodeServer) detachVolume(ctx context.Context, volumeGuid string) error {
+	klog.Infof("detaching volume: %s", volumeGuid)
+
+	_, err := ns.smaClient.DetachVolume(ctx,
+		&sma.DetachVolumeRequest{
+			VolumeGuid: &wrapperspb.StringValue { Value: volumeGuid },
+			DeviceId: &wrapperspb.StringValue { Value: ns.deviceId },
+		})
+	if err != nil {
+		klog.Errorf("failed to detach volume: %s", volumeGuid)
 	}
 	return err
 }

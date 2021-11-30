@@ -202,6 +202,60 @@ Follow [deploy/spdk/README](deploy/spdk/README.md) to deploy SPDK storage servic
   $ sudo ./minikube.sh clean
   ```
 
+## Storage Management Agent
+
+SPDK Storage Management Agent is an application that provides a gRPC interface for configuring and
+exposing storage volumes within an IPU.  The SMA configures a separate SPDK instance, both of which
+would run on an IPU.  The diagram below describes the high-level view of how it looks.
+```
+                               +---------+
+            +------------+     |ipu      |
+            |node        |     |         |
+            |            |  +-->sma---+  |
+            |spdk-csi    |  |  |      |  |
+            |node driver-+--+  |spdk<-+  |
+            |            |     | |       |
+            +------------+     +-+-------+
+                                 +-----+
+            +------------+             |
+            |controller  |     +-------+-+
+            |            |     |target | |
+            |spdk-csi    |     |       | |
+            |controller--+----->spdk<--+ |
+            |driver      |     |         |
+            +------------+     +---------+
+```
+For now, for the sake of simplicity, the node driver expects the SMA and the SPDK instance, which
+would normally run on an IPU, to be run on the same host.
+
+### Prerequisites
+
+On a fedora-based system, there are two extra packages that are required:
+ - protobuf-compiler
+ - protobuf-devel
+
+### Deployment
+
+The deployment is similar to the regular spdkcsi's, but it requires an extra SPDK instance along
+with the SMA running in the background.  Also, since there are two SPDK processes running on the same
+host, we need to specify the RPC socket path they listen on (the `-r|-s` parameters).
+
+```bash
+  $ cd $SPDK_REPO
+  # scripts/setup.sh
+  # build/bin/spdk_tgt -r /var/tmp/spdk.sock &
+  # build/bin/spdk_tgt -r /var/tmp/spdk.sock2 &
+  # scripts/sma.py &
+  # scripts/rpc_http_proxy.py -s /var/tmp/spdk.sock2 127.0.0.1 9009 spdkcsiuser spdkcsipass &
+  # scripts/rpc.py -s /var/tmp/spdk.sock2 <<EOF
+    bdev_malloc_create -b Malloc0 128 4096
+    bdev_lvol_create_lvstore Malloc0 lvs0
+    EOF
+```
+
+With all of that set up, it should be possible to follow the instructions for regular spdkcsi driver
+outlined above.
+
 ## Communication and Contribution
 
 Please join [SPDK community](https://spdk.io/community/) for communication and contribution.

@@ -2,7 +2,7 @@
 
 # This script can be used to install/delete snapshotcontroller and snapshot beta CRD
 
-SNAPSHOT_VERSION=${SNAPSHOT_VERSION:-"v3.0.3"}
+SNAPSHOT_VERSION=${SNAPSHOT_VERSION:-"v4.2.1"}
 
 TEMP_DIR="$(mktemp -d)"
 SNAPSHOTTER_URL="https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${SNAPSHOT_VERSION}"

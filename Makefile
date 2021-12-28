@@ -35,6 +35,9 @@ endif
 ifeq ($(origin CSI_IMAGE_TAG), undefined)
   CSI_IMAGE_TAG := canary
 endif
+ifeq ($(origin CSI_IMAGE_PUSH), undefined)
+  CSI_IMAGE_PUSH := 0
+endif
 CSI_IMAGE := $(CSI_IMAGE_REGISTRY)/spdkcsi:$(CSI_IMAGE_TAG)
 
 # default target
@@ -124,11 +127,13 @@ helm-test:
 # docker image
 image: spdkcsi
 	@echo === running docker build
-	@if [ -n $(HTTP_PROXY) ]; then \
-		proxy_opt="--build-arg http_proxy=$(HTTP_PROXY) --build-arg https_proxy=$(HTTP_PROXY)"; \
+	@if [ -n $(http_proxy) ]; then \
+		proxy_opt="--build-arg http_proxy=$(http_proxy) --build-arg https_proxy=$(https_proxy) --build-arg no_proxy=$(no_proxy)"; \
 	fi; \
 	docker build -t $(CSI_IMAGE) $$proxy_opt \
-	-f deploy/image/Dockerfile $(OUT_DIR)
+	-f deploy/image/Dockerfile $(OUT_DIR) \
+	docker push $(CSI_IMAGE)
+
 
 .PHONY: clean
 clean:

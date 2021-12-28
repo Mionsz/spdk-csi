@@ -205,25 +205,27 @@ Follow [deploy/spdk/README](deploy/spdk/README.md) to deploy SPDK storage servic
 ## Storage Management Agent
 
 SPDK Storage Management Agent is an application that provides a gRPC interface for configuring and
-exposing storage volumes within an IPU.  The SMA configures a separate SPDK instance, both of which
-would run on an IPU.  The diagram below describes the high-level view of how it looks.
+exposing storage volumes within an IPU (Infrastructure Processing Units). The SMA configures a separate
+SPDK instance, both of which would run on an IPU.  The diagram below describes the high-level view of 
+how it looks.
 ```
-                               +---------+
-            +------------+     |ipu      |
-            |node        |     |         |
-            |            |  +-->sma---+  |
-            |spdk-csi    |  |  |      |  |
-            |node driver-+--+  |spdk<-+  |
-            |            |     | |       |
-            +------------+     +-+-------+
-                                 +-----+
-            +------------+             |
-            |controller  |     +-------+-+
-            |            |     |target | |
-            |spdk-csi    |     |       | |
-            |controller--+----->spdk<--+ |
-            |driver      |     |         |
-            +------------+     +---------+
+        [Kubernetes nodes]    ¦    [SPDK storage nodes]
+                              ¦
+        +---[K8S-Pod]----+    ¦    +---[IPU-Node]---+
+        |--CSI-Node-Pod--|    ¦    |---Controller---|
+        |                |    ¦    |                |
+        | spdk-csi       |    ¦    |                |
+        | node driver---->--------->--SMA-->-spdk--->---+
+        +----------------+    ¦    |                |   |
+                              ¦    +----------------+   |
+        +---[K8S-Pod]----+    ¦                         |
+        |-CSI-Controller-|    ¦    +-[Storage-Node]-+   |
+        |                |    ¦    |-----Target-----|   |
+        | spdk-csi       |    ¦    |                |   |
+        | driver         |    ¦    |                |   |
+        | controller----->--------->---->-spdk-<----<---+
+        |                |    ¦    |                |
+        +----------------+    ¦    +----------------+
 ```
 For now, for the sake of simplicity, the node driver expects the SMA and the SPDK instance, which
 would normally run on an IPU, to be run on the same host.
@@ -238,23 +240,50 @@ On a fedora-based system, there are two extra packages that are required:
 
 The deployment is similar to the regular spdkcsi's, but it requires an extra SPDK instance along
 with the SMA running in the background.  Also, since there are two SPDK processes running on the same
-host, we need to specify the RPC socket path they listen on (the `-r|-s` parameters).
+host, we need to specify the RPC socket path they listen on (the `-r|-s` parameters). It is advised to
+edit spdk/scripts/sma.py so that the agent binds to all available interfaces. It can be done by replacing
+`localhost` with `0.0.0.0` address on line 20.
 
 ```bash
   $ cd $SPDK_REPO
-  # scripts/setup.sh
-  # build/bin/spdk_tgt -r /var/tmp/spdk.sock &
-  # build/bin/spdk_tgt -r /var/tmp/spdk.sock2 &
-  # scripts/sma.py &
-  # scripts/rpc_http_proxy.py -s /var/tmp/spdk.sock2 127.0.0.1 9009 spdkcsiuser spdkcsipass &
-  # scripts/rpc.py -s /var/tmp/spdk.sock2 <<EOF
+  $ scripts/setup.sh
+  $ build/bin/spdk_tgt -r /var/tmp/spdk.sock &
+  $ build/bin/spdk_tgt -r /var/tmp/spdk.sock2 &
+  $ scripts/sma.py &
+  $ scripts/rpc_http_proxy.py -s /var/tmp/spdk.sock2 0.0.0.0 9009 spdkcsiuser spdkcsipass &
+  $ scripts/rpc.py -s /var/tmp/spdk.sock2 <<EOF
     bdev_malloc_create -b Malloc0 128 4096
     bdev_lvol_create_lvstore Malloc0 lvs0
     EOF
 ```
-
 With all of that set up, it should be possible to follow the instructions for regular spdkcsi driver
 outlined above.
+### CSI Node configuration
+
+Configuration file for CSI-Node-Pod is dynamicly attached by Kubernetes using config map. Configuration
+for multi-node environment could be done using bellow parameters:
+```yaml
+  node-config.json: |-
+    {
+      "name":   "CSI-Node-Config",
+      "subnqn": "nqn.2020-04.io.spdk.csi:",
+      "transportAdrfam": "ipv4",
+      "transportType":   "tcp",
+      "transportAddr":   "10.211.11.81",
+      "transportPort":   "4421",
+      "smaGrpcAddr":     "10.211.11.81:50051"
+    }
+```
+Little values explanation:
+```yaml
+  name:            [Configuration-Name]
+  subnqn:          [Subsystem-NQN] # Node name sufix is auto concatenated
+  transportAdrfam: [Target-IP-Address-Family]
+  transportType:   [Target-Protocol]
+  transportAddr:   [Target-IP-Address]
+  transportPort:   [Target-Exposed-Port]
+  smaGrpcAddr:     [SMA-IP-Address]:[SMA-Exposed-Port]
+ ```
 
 ## Communication and Contribution
 

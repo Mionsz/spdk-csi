@@ -21,7 +21,7 @@ spec:
       hostNetwork: true
       containers:
       - name: spdkcsi-provisioner
-        image: k8s.gcr.io/sig-storage/csi-provisioner:v2.0.2
+        image: k8s.gcr.io/sig-storage/csi-provisioner:v3.0.0
         imagePullPolicy: "IfNotPresent"
         args:
         - "--v=5"
@@ -57,7 +57,7 @@ spec:
           mountPath: /csi
       - name: spdkcsi-controller
         image: spdkcsi/spdkcsi:canary
-        imagePullPolicy: "IfNotPresent"
+        imagePullPolicy: "Always"
         args:
         - "--v=5"
         - "--endpoint=unix:///csi/csi-provisioner.sock"

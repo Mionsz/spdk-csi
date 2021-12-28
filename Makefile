@@ -124,11 +124,12 @@ helm-test:
 # docker image
 image: spdkcsi
 	@echo === running docker build
-	@if [ -n $(HTTP_PROXY) ]; then \
-		proxy_opt="--build-arg http_proxy=$(HTTP_PROXY) --build-arg https_proxy=$(HTTP_PROXY)"; \
+	@if [ -n $(http_proxy) ]; then \
+		proxy_opt="--build-arg http_proxy=$(http_proxy) --build-arg https_proxy=$(https_proxy) --build-arg no_proxy=$(no_proxy)"; \
 	fi; \
 	docker build -t $(CSI_IMAGE) $$proxy_opt \
-	-f deploy/image/Dockerfile $(OUT_DIR)
+	-f deploy/image/Dockerfile $(OUT_DIR) \
+
 
 .PHONY: clean
 clean:

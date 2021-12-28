@@ -22,9 +22,9 @@ import (
 	"sync"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	"github.com/golang/protobuf/ptypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/klog"
 
 	csicommon "github.com/spdk/spdk-csi/pkg/csi-common"
@@ -217,7 +217,7 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
-	creationTime := ptypes.TimestampNow()
+	creationTime := timestamppb.Now()
 	snapshotData := csi.Snapshot{
 		SizeBytes:      volume.csiVolume.GetCapacityBytes(),
 		SnapshotId:     snapshotID,

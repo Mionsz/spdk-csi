@@ -25,19 +25,24 @@ import (
 	"sync"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/grpc"
 	"k8s.io/klog"
 	"k8s.io/utils/exec"
 	"k8s.io/utils/mount"
 
-	csicommon "github.com/spdk/spdk-csi/pkg/csi-common"
-	"github.com/spdk/spdk-csi/pkg/util"
 	"github.com/spdk/spdk-csi/_out/spdk.io/sma"
 	"github.com/spdk/spdk-csi/_out/spdk.io/sma/nvmf_tcp"
-	"google.golang.org/protobuf/types/known/wrapperspb"
+	csicommon "github.com/spdk/spdk-csi/pkg/csi-common"
+	"github.com/spdk/spdk-csi/pkg/util"
 	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
+)
+
+const (
+	cfgNodePathEnv = "SPDKCSI_NODE_CONFIG"
+	cfgNodeIDEnv   = "SPDKCSI_NODE_ID"
 )
 
 type nodeServer struct {
@@ -47,18 +52,55 @@ type nodeServer struct {
 	controllers map[string]int
 	mtx         sync.Mutex // protect volumes/controllers maps
 	smaClient   sma.StorageManagementAgentClient
-	deviceId    string
+	deviceID    string
 }
+type NodeConfig struct {
+	Name            string `json:"name"`
+	Subnqn          string `json:"subnqn"`
+	TransportAdrfam string `json:"transportAdrfam"`
+	TransportType   string `json:"transportType"`
+	TransportAddr   string `json:"transportAddr"`
+	TransportPort   string `json:"transportPort"`
+	SmaGrpcAddr     string `json:"smaGrpcAddr"`
+}
+
+var (
+	cfgNodePath = ""
+	cfgNodeName = ""
+	cfgNode     = NodeConfig{}
+)
 
 type nodeVolume struct {
 	initiator    util.SpdkCsiInitiator
 	stagingPath  string
-	controllerId string
+	controllerID string
 	tryLock      util.TryLock
 }
 
+func init() {
+	cfgNodePath = util.FromEnv(cfgNodePathEnv, "/etc/spdkcsi-config/node-config.json")
+	cfgNodeName = util.FromEnv(cfgNodeIDEnv, "cnode0")
+	klog.Infof("Initializing spdkcsi config file: %s", cfgNodePath)
+	err := util.ParseJSONFile(cfgNodePath, &cfgNode)
+	if err != nil {
+		klog.Warning("Failed to load and parse node server config file. Setting values to defaults.")
+		cfgNode = NodeConfig{
+			Name:            "localhost",
+			Subnqn:          "nqn.2020-04.io.spdk.csi:" + cfgNodeName,
+			TransportAdrfam: "ipv4",
+			TransportType:   "tcp",
+			TransportAddr:   "127.0.0.1",
+			TransportPort:   "4421",
+			SmaGrpcAddr:     "127.0.0.1:50051",
+		}
+	} else {
+		klog.Infof("Success. Node %s loaded and parsed node server config file.", cfgNodeName)
+		cfgNode.Subnqn += cfgNodeName
+	}
+}
+
 func newNodeServer(d *csicommon.CSIDriver) *nodeServer {
-	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
+	conn, err := grpc.Dial(cfgNode.SmaGrpcAddr, grpc.WithInsecure())
 	if err != nil {
 		klog.Fatalln("failed to connect to SMA gRPC server")
 	}
@@ -68,7 +110,7 @@ func newNodeServer(d *csicommon.CSIDriver) *nodeServer {
 		volumes:           make(map[string]*nodeVolume),
 		controllers:       make(map[string]int),
 		smaClient:         sma.NewStorageManagementAgentClient(conn),
-		deviceId:          "",
+		deviceID:          "",
 	}
 	err = ns.createDevice()
 	if err != nil {
@@ -78,7 +120,10 @@ func newNodeServer(d *csicommon.CSIDriver) *nodeServer {
 }
 
 func (ns *nodeServer) cleanup() {
-	ns.removeDevice()
+	err := ns.removeDevice()
+	if err != nil {
+		klog.Errorf("Node server remove device in cleanup method failed. %s", err.Error())
+	}
 }
 
 func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
@@ -89,7 +134,7 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 
 		volume, exists := ns.volumes[volumeID]
 		if !exists {
-			controllerId := ""
+			controllerID := ""
 			var initiatorParams map[string]string
 			if strings.EqualFold(req.GetVolumeContext()["targetType"], "tcp") {
 				// TODO: this could probably be done under a more fine-grained mutex
@@ -97,15 +142,18 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 				if err != nil {
 					return nil, err
 				}
-				controllerId = *id
-				ns.controllers[controllerId] += 1
+				controllerID = *id
+				ns.controllers[controllerID]++
 
 				ctrlrCleanup := func() {
 					if volume == nil {
-						if ns.controllers[controllerId] > 0 {
-							ns.controllers[controllerId] -= 1
-							if ns.controllers[controllerId] == 0 {
-								ns.disconnectController(ctx, controllerId)
+						if ns.controllers[controllerID] > 0 {
+							ns.controllers[controllerID]--
+							if ns.controllers[controllerID] == 0 {
+								err := ns.disconnectController(ctx, controllerID)
+								if err != nil {
+									klog.Errorf("Controller (ID=%s) disconnect in NodeStageVolume failed. Error: %s", controllerID, err.Error())
+								}
 							}
 						}
 					}
@@ -123,13 +171,14 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 					klog.Errorf("volume %s not found at context %v", volumeID, req.GetVolumeContext())
 					return nil, fmt.Errorf("volume not found: %s", volumeID)
 				}
-				initiatorParams = map[string]string {
-					"targetType": "tcp",
-					"targetAddr": "127.0.0.1",
-					"targetPort": "4421",
-					"nqn": "nqn.2020-04.io.spdk.csi:cnode0",
+
+				initiatorParams = map[string]string{
+					"targetType": cfgNode.TransportType,
+					"targetAddr": cfgNode.TransportAddr,
+					"targetPort": cfgNode.TransportPort,
+					"nqn":        cfgNode.Subnqn,
 					"targetPath": req.GetVolumeContext()["targetPath"],
-					"model": req.GetVolumeContext()["model"],
+					"model":      req.GetVolumeContext()["model"],
 				}
 			} else {
 				initiatorParams = req.GetVolumeContext()
@@ -139,9 +188,9 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 				return nil, err
 			}
 			volume = &nodeVolume{
-				initiator:   initiator,
-				stagingPath: "",
-				controllerId: controllerId,
+				initiator:    initiator,
+				stagingPath:  "",
+				controllerID: controllerID,
 			}
 			ns.volumes[volumeID] = volume
 		}
@@ -159,7 +208,7 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 			return &csi.NodeStageVolumeResponse{}, nil
 		}
 
-		if volume.controllerId != "" {
+		if volume.controllerID != "" {
 			err = ns.attachVolume(ctx, req.GetVolumeId())
 			if err != nil {
 				return nil, err
@@ -198,7 +247,7 @@ func (ns *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstag
 				klog.Warning("volume already unstaged")
 				return nil
 			}
-			if volume.controllerId != "" {
+			if volume.controllerID != "" {
 				err := ns.detachVolume(ctx, volumeID)
 				if err != nil {
 					return err
@@ -222,10 +271,13 @@ func (ns *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstag
 	}
 
 	ns.mtx.Lock()
-	if ns.controllers[volume.controllerId] > 0 {
-		ns.controllers[volume.controllerId] -= 1
-		if ns.controllers[volume.controllerId] == 0 {
-			ns.disconnectController(ctx, volume.controllerId)
+	if ns.controllers[volume.controllerID] > 0 {
+		ns.controllers[volume.controllerID]--
+		if ns.controllers[volume.controllerID] == 0 {
+			err := ns.disconnectController(ctx, volume.controllerID)
+			if err != nil {
+				klog.Errorf("Volume controller (ID=%s) disconnect in NodeUnstageVolume failed. Error: %s", volume.controllerID, err.Error())
+			}
 		}
 	}
 	delete(ns.volumes, volumeID)
@@ -374,17 +426,17 @@ func (ns *nodeServer) deleteMountPoint(path string) error {
 
 func (ns *nodeServer) createDevice() error {
 	params, err := anypb.New(&nvmf_tcp.CreateDeviceParameters{
-		Subnqn: &wrapperspb.StringValue{ Value: "nqn.2020-04.io.spdk.csi:cnode0" },
-		Adrfam: &wrapperspb.StringValue{ Value: "ipv4" },
-		Traddr: &wrapperspb.StringValue{ Value: "127.0.0.1" },
-		Trsvcid: &wrapperspb.StringValue{ Value: "4421" },
+		Subnqn:  &wrapperspb.StringValue{Value: cfgNode.Subnqn},
+		Adrfam:  &wrapperspb.StringValue{Value: cfgNode.TransportAdrfam},
+		Traddr:  &wrapperspb.StringValue{Value: cfgNode.TransportAddr},
+		Trsvcid: &wrapperspb.StringValue{Value: cfgNode.TransportPort},
 	})
 	if err != nil {
 		return err
 	}
 	response, err := ns.smaClient.CreateDevice(context.Background(),
 		&sma.CreateDeviceRequest{
-			Type: &wrapperspb.StringValue{ Value: "nvmf_tcp" },
+			Type:   &wrapperspb.StringValue{Value: "nvmf_tcp"},
 			Params: params,
 		})
 	if err != nil {
@@ -392,22 +444,22 @@ func (ns *nodeServer) createDevice() error {
 		return err
 	}
 	klog.Infof("created device: %s", response.Id.Value)
-	ns.deviceId = response.Id.Value
+	ns.deviceID = response.Id.Value
 	return nil
 }
 
 func (ns *nodeServer) removeDevice() error {
-	if ns.deviceId == "" {
+	if ns.deviceID == "" {
 		return nil
 	}
 
-	klog.Infof("removing device: %s", ns.deviceId)
+	klog.Infof("removing device: %s", ns.deviceID)
 	_, err := ns.smaClient.RemoveDevice(context.Background(),
 		&sma.RemoveDeviceRequest{
-			Id: &wrapperspb.StringValue{ Value: ns.deviceId },
+			Id: &wrapperspb.StringValue{Value: ns.deviceID},
 		})
 	if err != nil {
-		klog.Errorf("failed to remove device: %s", ns.deviceId)
+		klog.Errorf("failed to remove device: %s", ns.deviceID)
 	}
 	return err
 }
@@ -422,10 +474,10 @@ func (ns *nodeServer) connectController(ctx context.Context, ctrlrCtx map[string
 	case "tcp":
 		controllerType = "nvmf_tcp"
 		params, err = anypb.New(&nvmf_tcp.ConnectControllerParameters{
-			Subnqn: &wrapperspb.StringValue { Value: ctrlrCtx["nqn"] },
-			Traddr: &wrapperspb.StringValue { Value: ctrlrCtx["targetAddr"] },
-			Trsvcid: &wrapperspb.StringValue { Value: ctrlrCtx["targetPort"] },
-			Adrfam: &wrapperspb.StringValue { Value: "ipv4" },
+			Subnqn:  &wrapperspb.StringValue{Value: ctrlrCtx["nqn"]},
+			Traddr:  &wrapperspb.StringValue{Value: ctrlrCtx["targetAddr"]},
+			Trsvcid: &wrapperspb.StringValue{Value: ctrlrCtx["targetPort"]},
+			Adrfam:  &wrapperspb.StringValue{Value: "ipv4"},
 		})
 	default:
 		return nil, nil, fmt.Errorf("unsupported type: %s", targetType)
@@ -435,7 +487,7 @@ func (ns *nodeServer) connectController(ctx context.Context, ctrlrCtx map[string
 	}
 	response, err := ns.smaClient.ConnectController(ctx,
 		&sma.ConnectControllerRequest{
-			Type: &wrapperspb.StringValue { Value: controllerType },
+			Type:   &wrapperspb.StringValue{Value: controllerType},
 			Params: params,
 		})
 	if err != nil {
@@ -449,43 +501,43 @@ func (ns *nodeServer) connectController(ctx context.Context, ctrlrCtx map[string
 	return &response.Controller.Value, volumes, nil
 }
 
-func (ns *nodeServer) disconnectController(ctx context.Context, controllerId string) error {
-	klog.Infof("disconnecting controller: %s", controllerId)
+func (ns *nodeServer) disconnectController(ctx context.Context, controllerID string) error {
+	klog.Infof("disconnecting controller: %s", controllerID)
 
 	_, err := ns.smaClient.DisconnectController(ctx,
 		&sma.DisconnectControllerRequest{
-			Id: &wrapperspb.StringValue { Value: controllerId },
+			Id: &wrapperspb.StringValue{Value: controllerID},
 		})
 	if err != nil {
-		klog.Errorf("failed to disconnect controller: %s", controllerId)
+		klog.Errorf("failed to disconnect controller: %s", controllerID)
 	}
 	return err
 }
 
-func (ns *nodeServer) attachVolume(ctx context.Context, volumeGuid string) error {
-	klog.Infof("attaching volume: %s to device: %s", volumeGuid, ns.deviceId)
+func (ns *nodeServer) attachVolume(ctx context.Context, volumeGUID string) error {
+	klog.Infof("attaching volume: %s to device: %s", volumeGUID, ns.deviceID)
 
 	_, err := ns.smaClient.AttachVolume(ctx,
 		&sma.AttachVolumeRequest{
-			VolumeGuid: &wrapperspb.StringValue { Value: volumeGuid },
-			DeviceId: &wrapperspb.StringValue { Value: ns.deviceId },
+			VolumeGuid: &wrapperspb.StringValue{Value: volumeGUID},
+			DeviceId:   &wrapperspb.StringValue{Value: ns.deviceID},
 		})
 	if err != nil {
-		klog.Errorf("failed to attach volume: %s to device: %s", volumeGuid, ns.deviceId)
+		klog.Errorf("failed to attach volume: %s to device: %s", volumeGUID, ns.deviceID)
 	}
 	return err
 }
 
-func (ns *nodeServer) detachVolume(ctx context.Context, volumeGuid string) error {
-	klog.Infof("detaching volume: %s", volumeGuid)
+func (ns *nodeServer) detachVolume(ctx context.Context, volumeGUID string) error {
+	klog.Infof("detaching volume: %s", volumeGUID)
 
 	_, err := ns.smaClient.DetachVolume(ctx,
 		&sma.DetachVolumeRequest{
-			VolumeGuid: &wrapperspb.StringValue { Value: volumeGuid },
-			DeviceId: &wrapperspb.StringValue { Value: ns.deviceId },
+			VolumeGuid: &wrapperspb.StringValue{Value: volumeGUID},
+			DeviceId:   &wrapperspb.StringValue{Value: ns.deviceID},
 		})
 	if err != nil {
-		klog.Errorf("failed to detach volume: %s", volumeGuid)
+		klog.Errorf("failed to detach volume: %s", volumeGUID)
 	}
 	return err
 }

@@ -28,7 +28,7 @@ import (
 
 const (
 	driverName    = "csi.spdk.io"
-	driverVersion = "0.1.0"
+	driverVersion = "0.1.1"
 )
 
 var (

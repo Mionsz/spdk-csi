@@ -21,3 +21,13 @@ data:
         }
       ]
     }
+  node-config.json: |-
+    {
+      "name": "localhost",
+      "subnqn": "nqn.2020-04.io.spdk.csi:",
+      "transportAdrfam": "ipv4",
+      "transportType": "tcp",
+      "transportAddr": "127.0.0.1",
+      "transportPort": "4421",
+      "smaGrpcAddr":   "127.0.0.1:50051"
+    }

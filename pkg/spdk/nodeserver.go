@@ -25,19 +25,24 @@ import (
 	"sync"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/grpc"
 	"k8s.io/klog"
 	"k8s.io/utils/exec"
 	"k8s.io/utils/mount"
 
-	csicommon "github.com/spdk/spdk-csi/pkg/csi-common"
-	"github.com/spdk/spdk-csi/pkg/util"
 	"github.com/spdk/spdk-csi/_out/spdk.io/sma"
 	"github.com/spdk/spdk-csi/_out/spdk.io/sma/nvmf_tcp"
-	"google.golang.org/protobuf/types/known/wrapperspb"
+	csicommon "github.com/spdk/spdk-csi/pkg/csi-common"
+	"github.com/spdk/spdk-csi/pkg/util"
 	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
+)
+
+const (
+	cfgNodePathEnv = "SPDKCSI_NODE_CONFIG"
+	cfgNodeIDEnv   = "SPDKCSI_NODE_ID"
 )
 
 type nodeServer struct {
@@ -46,8 +51,23 @@ type nodeServer struct {
 	volumes     map[string]*nodeVolume
 	mtx         sync.Mutex // protect volume map
 	smaClient   sma.StorageManagementAgentClient
-	deviceId    string
+	deviceID    string
 }
+type NodeConfig struct {
+	Name            string `json:"name"`
+	Subnqn          string `json:"subnqn"`
+	TransportAdrfam string `json:"transportAdrfam"`
+	TransportType   string `json:"transportType"`
+	TransportAddr   string `json:"transportAddr"`
+	TransportPort   string `json:"transportPort"`
+	SmaGrpcAddr     string `json:"smaGrpcAddr"`
+}
+
+var (
+	cfgNodePath = ""
+	cfgNodeName = ""
+	cfgNode     = NodeConfig{}
+)
 
 type nodeVolume struct {
 	initiator    util.SpdkCsiInitiator
@@ -56,8 +76,30 @@ type nodeVolume struct {
 	tryLock      util.TryLock
 }
 
+func init() {
+	cfgNodePath = util.FromEnv(cfgNodePathEnv, "/etc/spdkcsi-config/node-config.json")
+	cfgNodeName = util.FromEnv(cfgNodeIDEnv, "cnode0")
+	klog.Infof("Initializing spdkcsi config file: %s", cfgNodePath)
+	err := util.ParseJSONFile(cfgNodePath, &cfgNode)
+	if err != nil {
+		klog.Warning("Failed to load and parse node server config file. Setting values to defaults.")
+		cfgNode = NodeConfig{
+			Name:            "localhost",
+			Subnqn:          "nqn.2020-04.io.spdk.csi:" + cfgNodeName,
+			TransportAdrfam: "ipv4",
+			TransportType:   "tcp",
+			TransportAddr:   "127.0.0.1",
+			TransportPort:   "4421",
+			SmaGrpcAddr:     "127.0.0.1:50051",
+		}
+	} else {
+		klog.Infof("Success. Node %s loaded and parsed node server config file.", cfgNodeName)
+		cfgNode.Subnqn += cfgNodeName
+	}
+}
+
 func newNodeServer(d *csicommon.CSIDriver) *nodeServer {
-	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
+	conn, err := grpc.Dial(cfgNode.SmaGrpcAddr, grpc.WithInsecure())
 	if err != nil {
 		klog.Fatalln("failed to connect to SMA gRPC server")
 	}
@@ -66,7 +108,7 @@ func newNodeServer(d *csicommon.CSIDriver) *nodeServer {
 		mounter:           mount.New(""),
 		volumes:           make(map[string]*nodeVolume),
 		smaClient:         sma.NewStorageManagementAgentClient(conn),
-		deviceId:          "",
+		deviceID:          "",
 	}
 	err = ns.createDevice()
 	if err != nil {
@@ -76,7 +118,10 @@ func newNodeServer(d *csicommon.CSIDriver) *nodeServer {
 }
 
 func (ns *nodeServer) cleanup() {
-	ns.removeDevice()
+	err := ns.removeDevice()
+	if err != nil {
+		klog.Errorf("Node server remove device in cleanup method failed. %s", err.Error())
+	}
 }
 
 func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
@@ -90,13 +135,13 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 		if !exists {
 			var initiatorParams map[string]string
 			if strings.EqualFold(req.GetVolumeContext()["targetType"], "tcp") {
-				initiatorParams = map[string]string {
-					"targetType": "tcp",
-					"targetAddr": "127.0.0.1",
-					"targetPort": "4421",
-					"nqn": "nqn.2020-04.io.spdk.csi:cnode0",
+				initiatorParams = map[string]string{
+					"targetType": cfgNode.TransportType,
+					"targetAddr": cfgNode.TransportAddr,
+					"targetPort": cfgNode.TransportPort,
+					"nqn":        cfgNode.Subnqn,
 					"targetPath": req.GetVolumeContext()["targetPath"],
-					"model": req.GetVolumeContext()["model"],
+					"model":      req.GetVolumeContext()["model"],
 				}
 				sma = true
 			} else {
@@ -348,17 +393,17 @@ func (ns *nodeServer) deleteMountPoint(path string) error {
 
 func (ns *nodeServer) createDevice() error {
 	params, err := anypb.New(&nvmf_tcp.CreateDeviceParameters{
-		Subnqn: &wrapperspb.StringValue{ Value: "nqn.2020-04.io.spdk.csi:cnode0" },
-		Adrfam: &wrapperspb.StringValue{ Value: "ipv4" },
-		Traddr: &wrapperspb.StringValue{ Value: "127.0.0.1" },
-		Trsvcid: &wrapperspb.StringValue{ Value: "4421" },
+		Subnqn:  &wrapperspb.StringValue{Value: cfgNode.Subnqn},
+		Adrfam:  &wrapperspb.StringValue{Value: cfgNode.TransportAdrfam},
+		Traddr:  &wrapperspb.StringValue{Value: cfgNode.TransportAddr},
+		Trsvcid: &wrapperspb.StringValue{Value: cfgNode.TransportPort},
 	})
 	if err != nil {
 		return err
 	}
 	response, err := ns.smaClient.CreateDevice(context.Background(),
 		&sma.CreateDeviceRequest{
-			Type: &wrapperspb.StringValue{ Value: "nvmf_tcp" },
+			Type:   &wrapperspb.StringValue{Value: "nvmf_tcp"},
 			Params: params,
 		})
 	if err != nil {
@@ -366,22 +411,22 @@ func (ns *nodeServer) createDevice() error {
 		return err
 	}
 	klog.Infof("created device: %s", response.Id.Value)
-	ns.deviceId = response.Id.Value
+	ns.deviceID = response.Id.Value
 	return nil
 }
 
 func (ns *nodeServer) removeDevice() error {
-	if ns.deviceId == "" {
+	if ns.deviceID == "" {
 		return nil
 	}
 
-	klog.Infof("removing device: %s", ns.deviceId)
+	klog.Infof("removing device: %s", ns.deviceID)
 	_, err := ns.smaClient.RemoveDevice(context.Background(),
 		&sma.RemoveDeviceRequest{
-			Id: &wrapperspb.StringValue{ Value: ns.deviceId },
+			Id: &wrapperspb.StringValue{Value: ns.deviceID},
 		})
 	if err != nil {
-		klog.Errorf("failed to remove device: %s", ns.deviceId)
+		klog.Errorf("failed to remove device: %s", ns.deviceID)
 	}
 	return err
 }
@@ -429,30 +474,30 @@ func (ns *nodeServer) disconnectVolume(ctx context.Context, volumeID string) err
 	return err
 }
 
-func (ns *nodeServer) attachVolume(ctx context.Context, volumeGuid string) error {
-	klog.Infof("attaching volume: %s to device: %s", volumeGuid, ns.deviceId)
+func (ns *nodeServer) attachVolume(ctx context.Context, volumeGUID string) error {
+	klog.Infof("attaching volume: %s to device: %s", volumeGUID, ns.deviceID)
 
 	_, err := ns.smaClient.AttachVolume(ctx,
 		&sma.AttachVolumeRequest{
-			VolumeGuid: &wrapperspb.StringValue { Value: volumeGuid },
-			DeviceId: &wrapperspb.StringValue { Value: ns.deviceId },
+			VolumeGuid: &wrapperspb.StringValue{Value: volumeGUID},
+			DeviceId:   &wrapperspb.StringValue{Value: ns.deviceID},
 		})
 	if err != nil {
-		klog.Errorf("failed to attach volume: %s to device: %s", volumeGuid, ns.deviceId)
+		klog.Errorf("failed to attach volume: %s to device: %s", volumeGUID, ns.deviceID)
 	}
 	return err
 }
 
-func (ns *nodeServer) detachVolume(ctx context.Context, volumeGuid string) error {
-	klog.Infof("detaching volume: %s", volumeGuid)
+func (ns *nodeServer) detachVolume(ctx context.Context, volumeGUID string) error {
+	klog.Infof("detaching volume: %s", volumeGUID)
 
 	_, err := ns.smaClient.DetachVolume(ctx,
 		&sma.DetachVolumeRequest{
-			VolumeGuid: &wrapperspb.StringValue { Value: volumeGuid },
-			DeviceId: &wrapperspb.StringValue { Value: ns.deviceId },
+			VolumeGuid: &wrapperspb.StringValue{Value: volumeGUID},
+			DeviceId:   &wrapperspb.StringValue{Value: ns.deviceID},
 		})
 	if err != nil {
-		klog.Errorf("failed to detach volume: %s", volumeGuid)
+		klog.Errorf("failed to detach volume: %s", volumeGUID)
 	}
 	return err
 }

@@ -38,7 +38,7 @@ spec:
           capabilities:
             add: ["SYS_ADMIN"]
           allowPrivilegeEscalation: true
-        image: spdkcsi/spdkcsi:canary
+        image: ger-is-registry.caas.intel.com/npgcn/spdk/spdkcsi:canary
         imagePullPolicy: "Always"
         args:
         - "--v=5"

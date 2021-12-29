@@ -11,7 +11,7 @@ spec:
   - ReadWriteOnce
   resources:
     requests:
-      storage: 256Mi
+      storage: 32Mi
   storageClassName: spdkcsi-sc
 
 ---

@@ -30,7 +30,7 @@ ifeq ($(origin GOARCH), undefined)
 endif
 # csi image info (spdkcsi/spdkcsi:canary)
 ifeq ($(origin CSI_IMAGE_REGISTRY), undefined)
-  CSI_IMAGE_REGISTRY := spdkcsi
+  CSI_IMAGE_REGISTRY := ger-is-registry.caas.intel.com/npgcn/spdk
 endif
 ifeq ($(origin CSI_IMAGE_TAG), undefined)
   CSI_IMAGE_TAG := canary

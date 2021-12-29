@@ -15,21 +15,21 @@ data:
       "nodes": [
         {
           "name": "localhost",
-          "rpcURL": "http://127.0.0.1:9009",
+          "rpcURL": "http://10.211.11.81:9009",
           "targetType": "nvme-tcp",
-          "targetAddr": "127.0.0.1"
+          "targetAddr": "10.211.11.81"
         }
       ]
     }
   node-config.json: |-
     {
-      "name": "localhost",
+      "name": "sma-controller-node",
       "subnqn": "nqn.2020-04.io.spdk.csi:",
       "transportAdrfam": "ipv4",
       "transportType": "tcp",
-      "transportAddr": "127.0.0.1",
+      "transportAddr": "10.211.11.81",
       "transportPort": "4421",
-      "smaGrpcAddr":   "127.0.0.1:50051"
+      "smaGrpcAddr":   "10.211.11.81:50051"
     }
 # cfgRPCTimeoutSeconds: integer value of seconds
 # cfgLvolClearMethod: none, unmap, write_zeroes

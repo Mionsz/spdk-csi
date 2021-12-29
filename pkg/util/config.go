@@ -16,16 +16,25 @@ limitations under the License.
 
 package util
 
-const (
-	// TODO: move hardcoded settings to config map
-	cfgRPCTimeoutSeconds = 20
-	cfgLvolClearMethod   = "unmap" // none, unmap, write_zeroes
-	cfgLvolThinProvision = true
-	cfgNVMfSvcPort       = "4420"
-	cfgISCSISvcPort      = "3260"
-	cfgAllowAnyHost      = true
-	cfgAddrFamily        = "IPv4" // IPv4, IPv6, IB, FC
-)
+type NodeConfig struct {
+	Name            string `json:"name" default:"sma-controller-node"`
+	Subnqn          string `json:"subnqn" default:"nqn.2020-04.io.spdk.csi:"`
+	TransportAdrfam string `json:"transportAdrfam" default:"ipv4"`
+	TransportType   string `json:"transportType" default:"tcp"`
+	TransportAddr   string `json:"transportAddr" default:"127.0.0.1"`
+	TransportPort   string `json:"transportPort" default:"4421"`
+	SmaGrpcAddr     string `json:"smaGrpcAddr" default:"127.0.0.1:50051"`
+}
+
+type GlobalConfig struct {
+	CfgRPCTimeoutSeconds int    `json:"cfgRPCTimeoutSeconds" default:"20"`
+	CfgLvolClearMethod   string `json:"cfgLvolClearMethod" default:"unmap"`
+	CfgLvolThinProvision bool   `json:"cfgLvolThinProvision" default:"true"`
+	CfgNVMfSvcPort       string `json:"cfgNVMfSvcPort" default:"4420"`
+	CfgISCSISvcPort      string `json:"cfgISCSISvcPort" default:"3260"`
+	CfgAllowAnyHost      bool   `json:"cfgAllowAnyHost" default:"true"`
+	CfgAddrFamily        string `json:"cfgAddrFamily" default:"IPv4"`
+}
 
 // Config stores parsed command line parameters
 type Config struct {
@@ -37,3 +46,7 @@ type Config struct {
 	IsControllerServer bool
 	IsNodeServer       bool
 }
+
+var (
+	CfgGlobal = GlobalConfig{}
+)

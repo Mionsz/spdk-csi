@@ -56,7 +56,7 @@ func newNVMf(client *rpcClient, targetType, targetAddr string) *nodeNVMf {
 		client:     client,
 		targetType: targetType,
 		targetAddr: targetAddr,
-		targetPort: cfgNVMfSvcPort,
+		targetPort: CfgGlobal.CfgNVMfSvcPort,
 		lvols:      make(map[string]*lvolNVMf),
 	}
 }
@@ -226,7 +226,7 @@ func (node *nodeNVMf) createSubsystem(model string) (string, error) {
 		ModelNumber  string `json:"model_number"`
 	}{
 		Nqn:          nqn,
-		AllowAnyHost: cfgAllowAnyHost,
+		AllowAnyHost: CfgGlobal.CfgAllowAnyHost,
 		SerialNumber: "spdkcsi-sn",
 		ModelNumber:  model, // client matches imported disk with model string
 	}
@@ -277,7 +277,7 @@ func (node *nodeNVMf) subsystemAddListener(nqn string) error {
 			TrType:  node.targetType,
 			TrAddr:  node.targetAddr,
 			TrSvcID: node.targetPort,
-			AdrFam:  cfgAddrFamily,
+			AdrFam:  CfgGlobal.CfgAddrFamily,
 		},
 	}
 

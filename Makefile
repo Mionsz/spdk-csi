@@ -131,7 +131,7 @@ image: spdkcsi
 		proxy_opt="--build-arg http_proxy=$(http_proxy) --build-arg https_proxy=$(https_proxy) --build-arg no_proxy=$(no_proxy)"; \
 	fi; \
 	docker build -t $(CSI_IMAGE) $$proxy_opt \
-	-f deploy/image/Dockerfile $(OUT_DIR) \
+	-f deploy/image/Dockerfile $(OUT_DIR)
 	docker push $(CSI_IMAGE)
 
 

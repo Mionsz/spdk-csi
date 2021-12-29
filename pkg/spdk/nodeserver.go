@@ -54,20 +54,11 @@ type nodeServer struct {
 	smaClient   sma.StorageManagementAgentClient
 	deviceID    string
 }
-type NodeConfig struct {
-	Name            string `json:"name"`
-	Subnqn          string `json:"subnqn"`
-	TransportAdrfam string `json:"transportAdrfam"`
-	TransportType   string `json:"transportType"`
-	TransportAddr   string `json:"transportAddr"`
-	TransportPort   string `json:"transportPort"`
-	SmaGrpcAddr     string `json:"smaGrpcAddr"`
-}
 
 var (
 	cfgNodePath = ""
 	cfgNodeName = ""
-	cfgNode     = NodeConfig{}
+	cfgNode     = util.NodeConfig{}
 )
 
 type nodeVolume struct {
@@ -80,23 +71,13 @@ type nodeVolume struct {
 func init() {
 	cfgNodePath = util.FromEnv(cfgNodePathEnv, "/etc/spdkcsi-config/node-config.json")
 	cfgNodeName = util.FromEnv(cfgNodeIDEnv, "cnode0")
-	klog.Infof("Initializing spdkcsi config file: %s", cfgNodePath)
+	klog.Infof("Initializing node %s spdkcsi config file: %s", cfgNodeIDEnv, cfgNodePath)
 	err := util.ParseJSONFile(cfgNodePath, &cfgNode)
 	if err != nil {
 		klog.Warning("Failed to load and parse node server config file. Setting values to defaults.")
-		cfgNode = NodeConfig{
-			Name:            "localhost",
-			Subnqn:          "nqn.2020-04.io.spdk.csi:" + cfgNodeName,
-			TransportAdrfam: "ipv4",
-			TransportType:   "tcp",
-			TransportAddr:   "127.0.0.1",
-			TransportPort:   "4421",
-			SmaGrpcAddr:     "127.0.0.1:50051",
-		}
-	} else {
-		klog.Infof("Success. Node %s loaded and parsed node server config file.", cfgNodeName)
-		cfgNode.Subnqn += cfgNodeName
+		cfgNode = util.NodeConfig{}
 	}
+	cfgNode.Subnqn += cfgNodeName
 }
 
 func newNodeServer(d *csicommon.CSIDriver) *nodeServer {

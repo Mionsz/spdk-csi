@@ -50,7 +50,7 @@ func newISCSI(client *rpcClient, targetAddr string) *nodeISCSI {
 	return &nodeISCSI{
 		client:     client,
 		targetAddr: targetAddr,
-		targetPort: cfgISCSISvcPort,
+		targetPort: CfgGlobal.CfgISCSISvcPort,
 		lvols:      make(map[string]*lvolISCSI),
 	}
 }

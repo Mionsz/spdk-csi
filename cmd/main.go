@@ -49,6 +49,13 @@ func init() {
 		klog.Exitf("failed to set logtostderr flag: %v", err)
 	}
 	flag.Parse()
+
+	var cfgGlobalPath = "/etc/spdkcsi-config/global-config.json"
+	err := util.ParseJSONFile(cfgGlobalPath, &util.CfgGlobal)
+	if err != nil {
+		klog.Warning("Failed to load and parse global server config file. Setting values to defaults.")
+		util.CfgGlobal = util.GlobalConfig{}
+	}
 }
 
 func main() {

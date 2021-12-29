@@ -31,3 +31,16 @@ data:
       "transportPort": "4421",
       "smaGrpcAddr":   "127.0.0.1:50051"
     }
+# cfgRPCTimeoutSeconds: integer value of seconds
+# cfgLvolClearMethod: none, unmap, write_zeroes
+# cfgAddrFamily: IPv4, IPv6, IB, FC
+  global-config.json: |-
+    {
+      "cfgRPCTimeoutSeconds": 20,
+      "cfgLvolClearMethod": "unmap", 
+      "cfgLvolThinProvision": true,
+      "cfgNVMfSvcPort": "4420",
+      "cfgISCSISvcPort": "3260",
+      "cfgAllowAnyHost": true,
+      "cfgAddrFamily": "IPv4" 
+    }

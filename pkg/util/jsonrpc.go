@@ -117,7 +117,7 @@ func NewSpdkNode(rpcURL, rpcUser, rpcPass, targetType, targetAddr string) (SpdkN
 		rpcURL:     rpcURL,
 		rpcUser:    rpcUser,
 		rpcPass:    rpcPass,
-		httpClient: &http.Client{Timeout: cfgRPCTimeoutSeconds * time.Second},
+		httpClient: &http.Client{Timeout: time.Duration(CfgGlobal.CfgRPCTimeoutSeconds) * time.Second},
 	}
 
 	switch strings.ToLower(targetType) {
@@ -171,8 +171,8 @@ func (client *rpcClient) createVolume(lvsName string, sizeMiB int64) (string, er
 		LvolName:      "csi-" + uuid.New().String(),
 		Size:          sizeMiB * 1024 * 1024,
 		LvsName:       lvsName,
-		ClearMethod:   cfgLvolClearMethod,
-		ThinProvision: cfgLvolThinProvision,
+		ClearMethod:   CfgGlobal.CfgLvolClearMethod,
+		ThinProvision: CfgGlobal.CfgLvolThinProvision,
 	}
 
 	var lvolID string

@@ -1,4 +1,4 @@
 [submodule "spdk"]
 	path = spdk
-	url = https://github.com/ksztyber/spdk
+	url = https://github.com/Mionsz/spdk
 	branch = sma
